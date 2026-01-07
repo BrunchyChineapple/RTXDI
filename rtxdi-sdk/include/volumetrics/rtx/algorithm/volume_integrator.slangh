@@ -23,6 +23,7 @@
 #include "rtx/algorithm/resolve.slangh"
 #include "rtx/algorithm/lighting.slangh"
 #include "rtx/algorithm/rtxdi/rtxdi.slangh"
+#include "rtx/pass/atmosphere/atmosphere_common.slangh"
 
 // Volume Integrate Helper Functions
 
@@ -253,6 +254,45 @@ void integrateVolume(
           const float3 lightDir = normalize(rabLightSample.position - volumeInteraction.position);
           radianceSH.addRadiance(fireflyFilteredRadiance, lightDir);
         }
+      }
+    }
+  }
+  
+  // Sample atmosphere sun if physical atmosphere is enabled
+  // This ensures volumetric passes receive direct sun lighting
+  // Note: Like surface lighting, sun bypasses the NEE pipeline and does direct visibility
+  if (cb.skyMode == 1)
+  {
+    AtmosphereVolumeSunSample sunSample = sampleAtmosphereSunLightVolume(
+      volumeInteraction.position,
+      ray.direction,
+      cb.atmosphereArgs,
+      cb.isZUp != 0);
+    
+    if (sunSample.valid && any(sunSample.radiance > vec3(0.0f)))
+    {
+      // Create a visibility ray toward the sun (same approach as surface integrator)
+      Ray sunVisibilityRay;
+      sunVisibilityRay.origin = volumeInteraction.position;
+      sunVisibilityRay.direction = f16vec3(sunSample.direction);
+      sunVisibilityRay.tMax = 1000000.0f;  // Effectively infinite
+      sunVisibilityRay.coneRadius = minimalRayInteraction.coneRadius;
+      sunVisibilityRay.spreadAngle = ray.spreadAngle;
+      
+      // Trace visibility - same setup as evalVolumeNEEVisibility
+      PortalSpace2BitsType portalSpace = PORTAL_SPACE_NONE;
+      uint8_t rayMask = OBJECT_MASK_OPAQUE | OBJECT_MASK_ALPHA_BLEND;
+      const VisibilityResult visibility = traceVisibilityRay<visibilityModeDisableCulling>(
+        sunVisibilityRay, rayMask, invalidRayPortalIndex, portalSpace);
+      
+      // Only add sun contribution if visible
+      if (!visibility.hasOpaqueHit)
+      {
+        // Sun radiance already includes phase function and proper scaling
+        // Just apply visibility attenuation (no PDF-based throughput like point lights)
+        vec3 sunRadiance = sunSample.radiance * vec3(visibility.attenuation);
+        const vec3 fireflyFilteredRadiance = fireflyFiltering(sunRadiance, volumeArgs.froxelFireflyFilteringLuminanceThreshold);
+        radianceSH.addRadiance(fireflyFilteredRadiance, sunSample.direction);
       }
     }
   }
