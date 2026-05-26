@@ -187,8 +187,13 @@ void integrateVolumetricNEE(
     const float3 physicalFroxelUVW = virtualFroxelUVWToPhysicalFroxelUVW(virtualFroxelUVW, currentFroxelVolume, volumeArgs.minFilteredRadianceU, volumeArgs.maxFilteredRadianceU, volumeArgs.inverseNumFroxelVolumes);
     
     const SphericalHarmonic sh = HarmonicsHelpers::loadFiltered3D<SphericalHarmonic>(volumeFilteredRadianceY, volumeFilteredRadianceCoCg, physicalFroxelUVW);
-    
-    const float3 accumulatedRadianceSample = sh.evaluateHenyeyGreenstein(viewDir, volumeArgs.volumetricFogAnisotropy);
+
+    // Fork (2026-05-26): cache stores physical sun radiance (atmosphere_common.slangh
+    // uses 0.5f matching surface direct). Re-apply the historical 10x fog-visibility
+    // boost ONLY at this fog-render site so volume_lighting.slangh::evalVolumetricNEE
+    // consumers (particles, dust, PSR diffuse, SAB Path B) read physical values and stop
+    // glowing at low sun.
+    const float3 accumulatedRadianceSample = sh.evaluateHenyeyGreenstein(viewDir, volumeArgs.volumetricFogAnisotropy) * 10.0f;
     
     const float3 inScattering = accumulatedRadianceSample + volumeArgs.multiScatteringEstimate;
     const float3 outScattering = volumeArgs.scatteringCoefficient * density;
