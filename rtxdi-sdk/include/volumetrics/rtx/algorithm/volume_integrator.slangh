@@ -360,6 +360,39 @@ void integrateVolume(
     radianceSH.addRadiance(fireflyFilteredAmbient, zenithWorld);
   }
 
+  // -------------------------------------------------------------------------
+  // Volumetric temporal antilag (fork)
+  // -------------------------------------------------------------------------
+  // The froxel radiance cache blends new in-scatter into reprojected history with a
+  // weight that saturates near 1/(maxAccumulationFrames + historyAgeOffset). At the
+  // default maxAccumulationFrames that is < 1% new light per frame, so a froxel that
+  // stays inside the view frustum bleeds out stale in-scatter over ~100 frames. On a
+  // fast lighting change (day<->night, bright interior<->exterior) this leaves a
+  // lingering screen-aligned haze patch that only clears when the froxel disoccludes
+  // (a ~180 degree turn). Where this frame's freshly-sampled radiance diverges strongly
+  // from the reprojected history, shorten this froxel's effective history age so it
+  // reconverges quickly. The metric is the relative change of the SH DC luminance
+  // (shY.w, the froxel's average luminance), squared so per-frame sampling noise (small
+  // relative changes) is ignored while large real transitions drive the history down.
+  // Purely local and proportional -- no global reset -- so transient lights only affect
+  // the froxels they touch, and the historyAgeOffset floor keeps reconvergence smooth
+  // (no popping). Disabled when volumetricAntilagSensitivity == 0. Mirrors NRD antilag.
+  if (volumeArgs.volumetricAntilagSensitivity > 0.0f && newHistoryAge > 1.0f)
+  {
+    const float oldLuminance = max(0.0f, oldRadianceSH.shY.w);
+    const float newLuminance = max(0.0f, radianceSH.shY.w);
+    const float relativeChange = abs(newLuminance - oldLuminance) / (oldLuminance + newLuminance + 1e-4f);
+    const float retention = saturate(1.0f - relativeChange * relativeChange * volumeArgs.volumetricAntilagSensitivity);
+
+    newHistoryAge = max(1.0f, newHistoryAge * retention);
+
+    // Recompute the new-sample blend weight from the shortened age. The offset matches
+    // the accumulation path above so a froxel driven to the floor still eases in over a
+    // few frames rather than hard-resetting.
+    const float historyAgeOffset = 5.0f;
+    historyAgeWeight = 1.0f / (newHistoryAge + historyAgeOffset);
+  }
+
   // Accumulate the previous reprojected radiance with the current filtered sampled radiance
 
   const SphericalHarmonic newAccumulatedRadianceSH = HarmonicsHelpers::mix(oldRadianceSH, radianceSH, historyAgeWeight);
