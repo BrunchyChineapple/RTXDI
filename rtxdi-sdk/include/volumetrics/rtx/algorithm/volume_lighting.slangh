@@ -34,6 +34,22 @@ uint portalSpaceToVolumeHint(PortalSpace2BitsType portalSpace)
 
 // Volumetric Attenuation Helper Functions
 
+// Fork: exponential vertical density falloff for the global volumetric medium. worldPos must be
+// ABSOLUTE world space. Returns a [0,1] scalar: 1 at/below seaLevel, decaying with altitude above it
+// along sceneUpDirection. Gives ground-hugging fog that clears the air/zenith and tames the uniform-
+// medium horizon wall. Returns 1 (no-op) when disabled.
+float calcVolumeHeightFalloff(const VolumeArgs volumeArgs, const float3 worldPos)
+{
+  if (volumeArgs.enableHeightFalloff == 0)
+  {
+    return 1.0f;
+  }
+
+  const float altitude = dot(worldPos, volumeArgs.sceneUpDirection);
+  const float rel = max(0.0f, altitude - volumeArgs.heightFalloffSeaLevel);
+  return exp(-rel / max(1e-3f, volumeArgs.heightFalloffScaleHeight));
+}
+
 // Evaluates the attenuation from the volumetric system (e.g. general fog, atmosphereic effects, etc) between the
 // origin and Hit Distance of a specified ray. If the infinitelyDistant flag is set, this indicates that the ray
 // should not be bounded by a Hit Distance value and is instead an infinite ray. This is typically to be used for
@@ -70,7 +86,18 @@ float3 calcVolumetricAttenuation(
 
     const float attenuationT = infinitelyDistant ? volumeArgs.maxAttenuationDistanceForNoAtmosphere : min(volumeArgs.maxAttenuationDistanceForNoAtmosphere, hitDistance);
 
-    return evalBeerLambertAttenuation(volumeArgs.attenuationCoefficient * attenuationScalar, attenuationT);
+    // Fork: scale the beyond-grid extinction by the height falloff sampled at the ray midpoint, so
+    // distant surfaces high in the view (or sky-bound rays) stop washing toward the fog color (kills
+    // the uniform-medium horizon "wall"), while ground-level rays still fade into the fog.
+    float effScalar = attenuationScalar;
+    if (volumeArgs.enableHeightFalloff != 0)
+    {
+      const float3 originWorld = (camera == none) ? origin : translatedWorldToWorld(camera.value, origin);
+      const float3 midWorld = originWorld + direction * (attenuationT * 0.5f);
+      effScalar *= calcVolumeHeightFalloff(volumeArgs, midWorld);
+    }
+
+    return evalBeerLambertAttenuation(volumeArgs.attenuationCoefficient * effScalar, attenuationT);
   }
   else
   {
@@ -223,9 +250,19 @@ float sampleDensityField(
 {
   const float atmosphericDensity = evalAtmosphericDensityBetween(volumeArgs, camera, from, to);
 
+  // Fork: apply the exponential height falloff to the in-froxel inscatter density (sampled at the
+  // segment midpoint in world space). Concentrates the visible fog near the ground/water and clears
+  // the air/zenith. Independent of the atmosphere shell and the noise field below.
+  float heightFactor = 1.0f;
+  if (volumeArgs.enableHeightFalloff != 0)
+  {
+    const float3 midWorld = translatedWorldToWorld(camera, 0.5f * (from + to));
+    heightFactor = calcVolumeHeightFalloff(volumeArgs, midWorld);
+  }
+
   if (!cb.volumeArgs.enableNoiseFieldDensity)
   {
-    return atmosphericDensity;
+    return atmosphericDensity * heightFactor;
   }
 
   // Convert the to/from positions from translated world space to world space
@@ -276,7 +313,7 @@ float sampleDensityField(
 
   const float remappedDensity = saturate(pow(noiseSum * volumeArgs.noiseFieldDensityScale, volumeArgs.noiseFieldDensityExponent));
 
-  return remappedDensity * atmosphericDensity;
+  return remappedDensity * atmosphericDensity * heightFactor;
 }
 
 // Volumetric NEE Helper Functions
