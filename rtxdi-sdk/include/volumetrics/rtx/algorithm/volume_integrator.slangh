@@ -290,7 +290,14 @@ void integrateVolume(
       {
         // Sun radiance already includes phase function and proper scaling
         // Just apply visibility attenuation (no PDF-based throughput like point lights)
-        vec3 sunRadiance = sunSample.radiance * vec3(visibility.attenuation);
+        //
+        // Fork (issue #35): scale the sun term independently of the scene-light
+        // fog gain. fogSunVisibilityGain (volume_composite_helpers.slangh) scales
+        // the whole SH cache at the consumer — sun AND every remix scene light
+        // together — so it can't boost daytime sun-fog without over-brightening
+        // scene-light fog. This sun-only knob fixes that mismatch. Default 1.0.
+        vec3 sunRadiance = sunSample.radiance * vec3(visibility.attenuation)
+          * cb.atmosphereArgs.atmosphereSunVolumetricRadianceScale;
         const vec3 fireflyFilteredRadiance = fireflyFiltering(sunRadiance, volumeArgs.froxelFireflyFilteringLuminanceThreshold);
         radianceSH.addRadiance(fireflyFilteredRadiance, sunSample.direction);
       }
@@ -299,7 +306,7 @@ void integrateVolume(
 
   // ----- Fork (2026-05-12): cloud-occluded sky-ambient hemisphere integration -----
   //
-  // When skyMode == 1 (Physical Atmosphere) and cloudSkyAmbientStrength > 0,
+  // When skyMode == 1 (Numos) and cloudSkyAmbientStrength > 0,
   // sample the sky-view LUT at a fixed set of upper-hemisphere directions,
   // attenuate each by the cloud-sky-transmittance LUT, weight by HG phase,
   // sum, and add to the per-frame radiance. Gives shadowed/overcast fog the
