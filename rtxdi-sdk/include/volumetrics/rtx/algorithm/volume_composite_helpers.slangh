@@ -194,7 +194,23 @@ void integrateVolumetricNEE(
     // so that other consumers of the same SH cache via
     // volume_lighting.slangh::evalVolumetricNEE (decals/particles/PSR/SAB Path B)
     // read honest physical values. Knob: rtx.volumetrics.fogSunVisibilityGain.
-    const float3 accumulatedRadianceSample = sh.evaluateHenyeyGreenstein(viewDir, volumeArgs.volumetricFogAnisotropy) * volumeArgs.fogSunVisibilityGain;
+    //
+    // Fork (Morrowind): underwater fog gain split. Froxels BELOW the water surface (altitude along
+    // sceneUpDirection < waterPlaneAltitude) use fogSunVisibilityGainUnderwater; froxels above use
+    // the above-water fogSunVisibilityGain. Standing on shore, the above-water gain blows the fog
+    // seen through the water into a white wall -- this lets it be tamed (0) independently while the
+    // above-water gain is raised for sun shafts. Inert when enableWaterFogSplit == 0.
+    float effectiveFogSunVisibilityGain = volumeArgs.fogSunVisibilityGain;
+    if (volumeArgs.enableWaterFogSplit != 0)
+    {
+      const float3 currentWorldPosition = translatedWorldToWorld(camera, currentTranslatedWorldPosition);
+      const float froxelAltitude = dot(currentWorldPosition, volumeArgs.sceneUpDirection);
+      if (froxelAltitude < volumeArgs.waterPlaneAltitude)
+      {
+        effectiveFogSunVisibilityGain = volumeArgs.fogSunVisibilityGainUnderwater;
+      }
+    }
+    const float3 accumulatedRadianceSample = sh.evaluateHenyeyGreenstein(viewDir, volumeArgs.volumetricFogAnisotropy) * effectiveFogSunVisibilityGain;
     
     const float3 inScattering = accumulatedRadianceSample + volumeArgs.multiScatteringEstimate;
     const float3 outScattering = volumeArgs.scatteringCoefficient * density;
