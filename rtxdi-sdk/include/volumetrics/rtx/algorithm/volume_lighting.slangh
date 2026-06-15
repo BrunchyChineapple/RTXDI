@@ -426,7 +426,9 @@ vec3 evalVolumetricNEE(
   //
   // Set to a small value (~0.05) to bring back a little atmospheric
   // tint on smoke/dust; the dial is intact.
-  const float kConsumerMultiplier = 0.0f;
+  // Fork (Morrowind): now a wired knob (rtx.volumetrics.volumetricParticleSunScale).
+  // Default 0.0 preserves the false-glow fix; ~0.008 restores atmospheric sun tint.
+  const float kConsumerMultiplier = volumeArgs.volumetricParticleSunScale;
 
   SphericalHarmonic sh = HarmonicsHelpers::loadFiltered3D<SphericalHarmonic>(volumeFilteredRadianceY, volumeFilteredRadianceCoCg, physicalFroxelUVW);
   sh.hanningFilter(0.7f); // This was determined experimentally by looking at scenes with lots of geometry and sharp light shafts and tuning until ringing was minimized

@@ -290,7 +290,8 @@ void integrateVolume(
       {
         // Sun radiance already includes phase function and proper scaling
         // Just apply visibility attenuation (no PDF-based throughput like point lights)
-        vec3 sunRadiance = sunSample.radiance * vec3(visibility.attenuation);
+        // Fork (Morrowind): sun-only volumetric scale, independent of fogSunVisibilityGain.
+        vec3 sunRadiance = sunSample.radiance * vec3(visibility.attenuation) * volumeArgs.atmosphereSunVolumetricRadianceScale;
         const vec3 fireflyFilteredRadiance = fireflyFiltering(sunRadiance, volumeArgs.froxelFireflyFilteringLuminanceThreshold);
         radianceSH.addRadiance(fireflyFilteredRadiance, sunSample.direction);
       }
