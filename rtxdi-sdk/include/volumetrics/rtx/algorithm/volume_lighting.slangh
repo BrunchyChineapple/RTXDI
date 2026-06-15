@@ -50,6 +50,20 @@ float calcVolumeHeightFalloff(const VolumeArgs volumeArgs, const float3 worldPos
   return exp(-rel / max(1e-3f, volumeArgs.heightFalloffScaleHeight));
 }
 
+// Fork (Morrowind) §-9: returns true when an ABSOLUTE world-space position is below the water surface
+// plane, using the same altitude-vs-waterPlaneAltitude test as the §-8 fog sun-gain split. Underwater
+// froxels use the absolute underwater fog coefficients (and skip height falloff). Returns false (inert)
+// when the water split is disabled, so above-water behavior is unchanged.
+bool isBelowWaterPlane(const VolumeArgs volumeArgs, const float3 worldPos)
+{
+  if (volumeArgs.enableWaterFogSplit == 0)
+  {
+    return false;
+  }
+
+  return dot(worldPos, volumeArgs.sceneUpDirection) < volumeArgs.waterPlaneAltitude;
+}
+
 // Evaluates the attenuation from the volumetric system (e.g. general fog, atmosphereic effects, etc) between the
 // origin and Hit Distance of a specified ray. If the infinitelyDistant flag is set, this indicates that the ray
 // should not be bounded by a Hit Distance value and is instead an infinite ray. This is typically to be used for
@@ -89,15 +103,26 @@ float3 calcVolumetricAttenuation(
     // Fork: scale the beyond-grid extinction by the height falloff sampled at the ray midpoint, so
     // distant surfaces high in the view (or sky-bound rays) stop washing toward the fog color (kills
     // the uniform-medium horizon "wall"), while ground-level rays still fade into the fog.
+    // §-9: below the water plane use the ABSOLUTE underwater extinction coefficient instead, and skip
+    // the height falloff (underwater fog should not thin with altitude below the surface). This keeps
+    // beer-lambert attenuation through underwater fog murky even in clear weather.
     float effScalar = attenuationScalar;
-    if (volumeArgs.enableHeightFalloff != 0)
+    float3 attenCoef = volumeArgs.attenuationCoefficient;
+    if (volumeArgs.enableHeightFalloff != 0 || volumeArgs.enableWaterFogSplit != 0)
     {
       const float3 originWorld = (camera == none) ? origin : translatedWorldToWorld(camera.value, origin);
       const float3 midWorld = originWorld + direction * (attenuationT * 0.5f);
-      effScalar *= calcVolumeHeightFalloff(volumeArgs, midWorld);
+      if (isBelowWaterPlane(volumeArgs, midWorld))
+      {
+        attenCoef = volumeArgs.underwaterAttenuationCoefficient;
+      }
+      else if (volumeArgs.enableHeightFalloff != 0)
+      {
+        effScalar *= calcVolumeHeightFalloff(volumeArgs, midWorld);
+      }
     }
 
-    return evalBeerLambertAttenuation(volumeArgs.attenuationCoefficient * effScalar, attenuationT);
+    return evalBeerLambertAttenuation(attenCoef * effScalar, attenuationT);
   }
   else
   {
@@ -257,7 +282,12 @@ float sampleDensityField(
   if (volumeArgs.enableHeightFalloff != 0)
   {
     const float3 midWorld = translatedWorldToWorld(camera, 0.5f * (from + to));
-    heightFactor = calcVolumeHeightFalloff(volumeArgs, midWorld);
+    // §-9: don't thin underwater fog with altitude below the surface -- keep full density there so the
+    // absolute underwater scattering coefficient yields murky water regardless of altitude/weather.
+    if (!isBelowWaterPlane(volumeArgs, midWorld))
+    {
+      heightFactor = calcVolumeHeightFalloff(volumeArgs, midWorld);
+    }
   }
 
   if (!cb.volumeArgs.enableNoiseFieldDensity)

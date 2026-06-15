@@ -200,7 +200,16 @@ void integrateVolumetricNEE(
     // the above-water fogSunVisibilityGain. Standing on shore, the above-water gain blows the fog
     // seen through the water into a white wall -- this lets it be tamed (0) independently while the
     // above-water gain is raised for sun shafts. Inert when enableWaterFogSplit == 0.
+    // Fork (Morrowind) §-8/§-9: ONE per-froxel water-plane test drives BOTH the sun-gain split and the
+    // underwater absolute fog density. Froxels BELOW the water surface (altitude along sceneUpDirection
+    // < waterPlaneAltitude) use fogSunVisibilityGainUnderwater AND the absolute underwater scattering
+    // coefficient; froxels above use the above-water fogSunVisibilityGain and scatteringCoefficient.
+    // Standing on shore, the above-water gain blows the fog seen through the water into a white wall --
+    // the underwater gain (0) tames that, and the underwater scattering coefficient keeps the water
+    // murky even in clear weather (its own sigma_t, not a scale of the thin above-water one). Inert when
+    // enableWaterFogSplit == 0.
     float effectiveFogSunVisibilityGain = volumeArgs.fogSunVisibilityGain;
+    float3 effectiveScatteringCoefficient = volumeArgs.scatteringCoefficient;
     if (volumeArgs.enableWaterFogSplit != 0)
     {
       const float3 currentWorldPosition = translatedWorldToWorld(camera, currentTranslatedWorldPosition);
@@ -208,12 +217,13 @@ void integrateVolumetricNEE(
       if (froxelAltitude < volumeArgs.waterPlaneAltitude)
       {
         effectiveFogSunVisibilityGain = volumeArgs.fogSunVisibilityGainUnderwater;
+        effectiveScatteringCoefficient = volumeArgs.underwaterScatteringCoefficient;
       }
     }
     const float3 accumulatedRadianceSample = sh.evaluateHenyeyGreenstein(viewDir, volumeArgs.volumetricFogAnisotropy) * effectiveFogSunVisibilityGain;
     
     const float3 inScattering = accumulatedRadianceSample + volumeArgs.multiScatteringEstimate;
-    const float3 outScattering = volumeArgs.scatteringCoefficient * density;
+    const float3 outScattering = effectiveScatteringCoefficient * density;
   
     preintegratedRadiance += inScattering * outScattering * accumulatedTransmittance * stepSize ;
     accumulatedTransmittance *= calcVolumetricAttenuation(volumeArgs, camera, false, stepSize, previousTranslatedWorldPosition, viewDir, density);
