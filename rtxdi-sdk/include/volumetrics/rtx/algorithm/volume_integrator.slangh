@@ -81,8 +81,34 @@ bool evalNEE(
   // sanitization is done in the demodulate pass for non-volumetric lighting before feeding data to the
   // denoisers.
   radiance += sanitize(attenuatedRadiance, vec3(0.0f, 0.0f, 0.0f));
-  
+
   return true;
+}
+
+// Cloud-on-terrain shadow on the atmosphere sun/moons (real Remix distant lights)
+// in the volumetric froxel cache. Mirrors the surface fold in integrator_direct.slangh:
+// fold the voxel-grid cloud transmittance onto the flagged light's sampled radiance so
+// volumetric god-rays keep their cloud shadows. Needed because the sun/moon are now real
+// distant lights sampled by the volume NEE loop below — the bespoke
+// sampleAtmosphereSunLightVolume injection that used to apply cloud shadow here was
+// removed (it double-counted the sun into the cache; issue #35). fork — 2026-06-28.
+void applyAtmosphereCloudShadowVolume(inout RAB_LightSample lightSample, uint lightIdx, vec3 froxelWorldPosition)
+{
+  if (cb.skyMode != 1 || cb.atmosphereArgs.cloudVoxelShadowsEnable == 0u || lightIdx == RTXDI_INVALID_LIGHT_INDEX)
+  {
+    return;
+  }
+
+  const DecodedPolymorphicLight cloudShadowLight = decodePolymorphicLight(lights[lightIdx]);
+  if (!cloudShadowLight.atmosphereCloudShadowed)
+  {
+    return;
+  }
+
+  const vec3 dirToLight = normalize(lightSample.position - froxelWorldPosition);
+  const float cloudT = sampleCloudGroundShadow_OptionB(
+      froxelWorldPosition, dirToLight, cb.atmosphereArgs, cb.isZUp != 0);
+  lightSample.radiance *= pow(cloudT, cb.atmosphereArgs.cloudShadowFactorStrength);
 }
 
 // Volume Integrate Functions
@@ -188,6 +214,9 @@ void integrateVolume(
 
     if (lightSampleValid)
     {
+      // Fold cloud-on-terrain shadow onto the atmosphere sun/moons (flagged distant lights).
+      applyAtmosphereCloudShadowVolume(rabLightSample, currentVolumeReservoir.lightSample.lightIndex, volumeInteraction.position);
+
       if (evalNEE(
           radiance,
           rabLightSample, inverseSelectionPdf, sampledTransportPortalIndex,
@@ -235,7 +264,10 @@ void integrateVolume(
         // Note: lightType comes from the loop and is provided as a hint so that the compiler
         // can effectively unroll the loop and remove the switch from decodedPolymorphicLightSampleArea called within.
         RAB_LightSample rabLightSample = RAB_GetLightSampleWithTypeHint(offsetLightIndex, risSampleCoordinates, lightType, rabVolumeInteraction);
-        
+
+        // Fold cloud-on-terrain shadow onto the atmosphere sun/moons (flagged distant lights).
+        applyAtmosphereCloudShadowVolume(rabLightSample, offsetLightIndex, volumeInteraction.position);
+
         vec3 radiance = vec3(0.0f, 0.0f, 0.0f);
 
         if(evalNEE(
@@ -258,51 +290,13 @@ void integrateVolume(
     }
   }
   
-  // Sample atmosphere sun if physical atmosphere is enabled
-  // This ensures volumetric passes receive direct sun lighting
-  // Note: Like surface lighting, sun bypasses the NEE pipeline and does direct visibility
-  if (cb.skyMode == 1)
-  {
-    AtmosphereVolumeSunSample sunSample = sampleAtmosphereSunLightVolume(
-      volumeInteraction.position,
-      ray.direction,
-      cb.atmosphereArgs,
-      cb.isZUp != 0);
-    
-    if (sunSample.valid && any(sunSample.radiance > vec3(0.0f)))
-    {
-      // Create a visibility ray toward the sun (same approach as surface integrator)
-      Ray sunVisibilityRay;
-      sunVisibilityRay.origin = volumeInteraction.position;
-      sunVisibilityRay.direction = f16vec3(sunSample.direction);
-      sunVisibilityRay.tMax = 1000000.0f;  // Effectively infinite
-      sunVisibilityRay.coneRadius = minimalRayInteraction.coneRadius;
-      sunVisibilityRay.spreadAngle = ray.spreadAngle;
-      
-      // Trace visibility - same setup as evalVolumeNEEVisibility
-      PortalSpace2BitsType portalSpace = PORTAL_SPACE_NONE;
-      uint8_t rayMask = OBJECT_MASK_OPAQUE | OBJECT_MASK_ALPHA_BLEND;
-      const VisibilityResult visibility = traceVisibilityRay<visibilityModeDisableCulling>(
-        sunVisibilityRay, rayMask, invalidRayPortalIndex, portalSpace);
-      
-      // Only add sun contribution if visible
-      if (!visibility.hasOpaqueHit)
-      {
-        // Sun radiance already includes phase function and proper scaling
-        // Just apply visibility attenuation (no PDF-based throughput like point lights)
-        //
-        // Fork (issue #35): scale the sun term independently of the scene-light
-        // fog gain. fogSunVisibilityGain (volume_composite_helpers.slangh) scales
-        // the whole SH cache at the consumer — sun AND every remix scene light
-        // together — so it can't boost daytime sun-fog without over-brightening
-        // scene-light fog. This sun-only knob fixes that mismatch. Default 1.0.
-        vec3 sunRadiance = sunSample.radiance * vec3(visibility.attenuation)
-          * cb.atmosphereArgs.atmosphereSunVolumetricRadianceScale;
-        const vec3 fireflyFilteredRadiance = fireflyFiltering(sunRadiance, volumeArgs.froxelFireflyFilteringLuminanceThreshold);
-        radianceSH.addRadiance(fireflyFilteredRadiance, sunSample.direction);
-      }
-    }
-  }
+  // Atmosphere sun/moons are real Remix distant lights (since the directional-light
+  // graduation) and are already sampled by the volume NEE loop above, so the old
+  // bespoke sampleAtmosphereSunLightVolume injection that lived here was removed — it
+  // double-counted the sun into the froxel cache (once via NEE, once here), which made
+  // volumetric fog impossible to balance (issue #35). Cloud-on-terrain shadowing on the
+  // distant sun/moons is preserved via applyAtmosphereCloudShadowVolume, folded onto the
+  // NEE light sample above. fork — 2026-06-28.
 
   // ----- Fork (2026-05-12): cloud-occluded sky-ambient hemisphere integration -----
   //
