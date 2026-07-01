@@ -458,6 +458,9 @@ vec3 evalVolumetricNEE(
   // tint on smoke/dust; the dial is intact.
   // Fork (Morrowind): now a wired knob (rtx.volumetrics.volumetricParticleSunScale).
   // Default 0.0 preserves the false-glow fix; ~0.008 restores atmospheric sun tint.
+  // (Kept over remixplus's volumetricConsumerGain: that knob is not present in the
+  // merged volume_args.h GPU struct, whereas volumetricParticleSunScale is — same
+  // feature, issue #36 == our §-3 particle-sun knob.)
   const float kConsumerMultiplier = volumeArgs.volumetricParticleSunScale;
 
   SphericalHarmonic sh = HarmonicsHelpers::loadFiltered3D<SphericalHarmonic>(volumeFilteredRadianceY, volumeFilteredRadianceCoCg, physicalFroxelUVW);
